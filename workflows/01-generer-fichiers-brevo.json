@@ -1,0 +1,153 @@
+{
+  "id": "seg0000001brevo",
+  "name": "01 - Generer fichiers Brevo (cotisants + liste_clients)",
+  "nodes": [
+    {
+      "id": "trigger-1",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "read-clients",
+      "name": "Read liste_clients.csv",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        460,
+        200
+      ],
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/files/liste_clients/*.csv"
+      }
+    },
+    {
+      "id": "read-cotisants",
+      "name": "Read cotisants.csv",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        460,
+        400
+      ],
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "/files/cotisants/*.csv"
+      }
+    },
+    {
+      "id": "merge-reads",
+      "name": "Merge fichiers lus",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 2
+      }
+    },
+    {
+      "id": "segment-code",
+      "name": "Segmenter et categoriser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ==== CONFIG (à ajuster si besoin) ====\nconst EMAIL_BLOCKLIST = new Set(['blabla@gmail.com']);\nconst PLACEHOLDER_LOCAL_PARTS = /^(test|xxx+|aaa+|none|na|inconnu|sansemail|noemail|exemple|example)$/i;\n\nfunction getCurrentYear() {\n  return new Date().getFullYear().toString();\n}\n\n// Les CSV exportés par ouiresa sont en Windows-1252, pas UTF-8 (accents/apostrophes\n// typographiques cassés sinon). Buffer.toString('latin1') ne suffit pas : les octets\n// 0x80-0x9F diffèrent entre ISO-8859-1 et Windows-1252 (ex: 0x92 = apostrophe courbe).\nconst CP1252_HIGH = {\n  0x80: 0x20ac, 0x82: 0x201a, 0x83: 0x0192, 0x84: 0x201e, 0x85: 0x2026,\n  0x86: 0x2020, 0x87: 0x2021, 0x88: 0x02c6, 0x89: 0x2030, 0x8a: 0x0160,\n  0x8b: 0x2039, 0x8c: 0x0152, 0x8e: 0x017d, 0x91: 0x2018, 0x92: 0x2019,\n  0x93: 0x201c, 0x94: 0x201d, 0x95: 0x2022, 0x96: 0x2013, 0x97: 0x2014,\n  0x98: 0x02dc, 0x99: 0x2122, 0x9a: 0x0161, 0x9b: 0x203a, 0x9c: 0x0153,\n  0x9e: 0x017e, 0x9f: 0x0178,\n};\n\nfunction decodeCp1252(buffer) {\n  let out = '';\n  for (let i = 0; i < buffer.length; i++) {\n    const b = buffer[i];\n    out += String.fromCodePoint(CP1252_HIGH[b] || b);\n  }\n  return out;\n}\n\n// ==== Parseur CSV générique (gère guillemets, champs vides, CRLF, retours à\n// la ligne à l'intérieur d'un champ entre guillemets) ====\nfunction parseCsv(text, delimiter) {\n  const rows = [];\n  let row = [];\n  let field = '';\n  let inQuotes = false;\n  let i = 0;\n  const len = text.length;\n  while (i < len) {\n    const c = text[i];\n    if (inQuotes) {\n      if (c === '\"') {\n        if (text[i + 1] === '\"') {\n          field += '\"';\n          i += 2;\n          continue;\n        }\n        inQuotes = false;\n        i++;\n        continue;\n      }\n      field += c;\n      i++;\n      continue;\n    }\n    if (c === '\"') {\n      inQuotes = true;\n      i++;\n      continue;\n    }\n    if (c === delimiter) {\n      row.push(field);\n      field = '';\n      i++;\n      continue;\n    }\n    if (c === '\\r') {\n      i++;\n      continue;\n    }\n    if (c === '\\n') {\n      row.push(field);\n      rows.push(row);\n      row = [];\n      field = '';\n      i++;\n      continue;\n    }\n    field += c;\n    i++;\n  }\n  if (field.length > 0 || row.length > 0) {\n    row.push(field);\n    rows.push(row);\n  }\n  return rows.filter((r) => !(r.length === 1 && r[0] === ''));\n}\n\nfunction rowsToObjects(rows) {\n  const header = rows[0].map((h) => h.trim());\n  return rows.slice(1).map((r) => {\n    const obj = {};\n    header.forEach((h, i) => {\n      obj[h] = (r[i] ?? '').trim();\n    });\n    return obj;\n  });\n}\n\n// Garde-fou contre un changement de format de l'export ouiresa (colonne\n// renommee/supprimee) : sans ca, le script continuerait a tourner en\n// silence avec des valeurs undefined partout et classerait tout le monde\n// en \"autre\" sans erreur visible.\nconst REQUIRED_CLIENT_COLUMNS = [\n  'Type', 'Type pers. morale', 'Raison sociale', 'Personne référente', 'Civilité',\n  'Nom', 'Prénom', 'Email', 'Mobile', 'Téléphone', 'Adresse 1', 'Adresse 2',\n  'Code postal', 'Ville', 'Pays',\n];\nconst REQUIRED_COTISANT_COLUMNS = ['Email', 'Année', 'Type', 'Titre'];\n\nfunction validateHeader(rows, requiredColumns, label) {\n  const header = (rows[0] || []).map((h) => h.trim());\n  const missing = requiredColumns.filter((c) => !header.includes(c));\n  if (missing.length > 0) {\n    throw new Error(\n      `Colonnes manquantes dans ${label}: ${missing.join(', ')}. L'export ouiresa a peut-etre change de format.`\n    );\n  }\n}\n\n// Types de cotisation/licence connus au moment de l'ecriture de ce script\n// (constate sur l'export reel). Une valeur non reconnue ne fait pas\n// echouer l'import mais declenche un avertissement de revue.\nconst KNOWN_COTISATION_TYPES = new Set([\n  'Cotisation club',\n  'Passeport Voile - FFV',\n  'Licence Club FFVoile Adulte',\n  'Licence Club FFVoile Jeune',\n]);\n\nfunction stripAccents(s) {\n  return (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');\n}\n\nfunction norm(s) {\n  return stripAccents(s || '').toLowerCase().trim();\n}\n\nfunction normalizeEmail(e) {\n  return (e || '').trim().toLowerCase();\n}\n\nfunction isValidEmailFormat(e) {\n  return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(e);\n}\n\n// Certaines lignes source ont un email recopié par erreur dans le champ Ville\n// (constaté sur l'export réel : 3 lignes). On neutralise plutôt que d'importer une\n// ville invalide dans Brevo.\nfunction sanitizeCityField(v) {\n  return v && v.includes('@') ? '' : v;\n}\n\n// Brevo rejette (ou ignore) un numero qui n'est pas dans un format valide.\n// On normalise vers E.164 (+33...) et on renvoie une valeur vide plutot\n// qu'un numero bancal si on ne peut pas le convertir avec confiance --\n// mieux vaut un attribut absent qu'une valeur qui fait echouer l'appel API.\nfunction normalizePhone(raw, countryHint) {\n  if (!raw) return { value: '', ok: true, raw: raw || '' };\n\n  let digits = raw.replace(/[^\\d+]/g, '');\n  if (!digits) return { value: '', ok: false, raw };\n\n  const digitsOnly = digits.replace(/^\\+/, '');\n  // Numeros placeholder (0000000000, 1111111...): un seul chiffre repete.\n  if (/^(\\d)\\1+$/.test(digitsOnly)) return { value: '', ok: false, raw };\n\n  const country = (countryHint || '').trim().toUpperCase();\n  const isFrance = country === '' || country === 'FR' || country === 'FRANCE';\n\n  if (digits.startsWith('00')) {\n    digits = '+' + digits.slice(2);\n  } else if (digits.startsWith('+')) {\n    // deja au format international, on le garde tel quel\n  } else if (digits.startsWith('0')) {\n    if (!isFrance) {\n      // format local pour un pays non-FR : pas de regle fiable, on ne devine pas\n      return { value: '', ok: false, raw };\n    }\n    digits = '+33' + digits.slice(1);\n  } else {\n    return { value: '', ok: false, raw };\n  }\n\n  if (!/^\\+[1-9]\\d{6,14}$/.test(digits)) {\n    return { value: '', ok: false, raw };\n  }\n  return { value: digits, ok: true, raw };\n}\n\nfunction isBlockedEmail(e) {\n  if (EMAIL_BLOCKLIST.has(e)) return true;\n  const localPart = e.split('@')[0] || '';\n  if (PLACEHOLDER_LOCAL_PARTS.test(localPart)) return true;\n  return false;\n}\n\nconst CATEGORY_PRIORITY = ['ecole', 'entreprise', 'cotisant_annuel', 'cotisant_saisonnier', 'autre'];\n\nfunction buildOutputs(clientsRows, cotisantsRows, currentYear) {\n  currentYear = currentYear || getCurrentYear();\n\n  const cotisationsByEmail = new Map();\n  for (const row of cotisantsRows) {\n    const email = normalizeEmail(row['Email']);\n    if (!email) continue;\n    if (!cotisationsByEmail.has(email)) cotisationsByEmail.set(email, []);\n    cotisationsByEmail.get(email).push(row);\n  }\n\n  const clientsByEmail = new Map();\n  const rejected = [];\n\n  for (const row of clientsRows) {\n    const rawEmail = row['Email'];\n    const email = normalizeEmail(rawEmail);\n    if (!email || !isValidEmailFormat(email)) {\n      rejected.push({ ...row, __raison: !rawEmail ? 'Email manquant' : 'Email invalide' });\n      continue;\n    }\n    if (isBlockedEmail(email)) {\n      rejected.push({ ...row, __raison: 'Email suspect / placeholder probable (partagé par de nombreuses personnes non liées)' });\n      continue;\n    }\n    if (!clientsByEmail.has(email)) clientsByEmail.set(email, []);\n    clientsByEmail.get(email).push(row);\n  }\n\n  const brevoRows = [];\n  for (const [email, people] of clientsByEmail.entries()) {\n    const cotisationRows = cotisationsByEmail.get(email) || [];\n    const currentYearCotisations = cotisationRows.filter((r) => r['Année'] === currentYear);\n\n    const isEcole = people.some((p) => norm(p['Type pers. morale']).includes('ecole'));\n    const isEntreprise = people.some((p) => norm(p['Type pers. morale']).includes('entreprise'));\n    const hasAnnuel = currentYearCotisations.some((r) => norm(r['Titre']).includes('annuelle'));\n    const hasSaisonnier = currentYearCotisations.some((r) => norm(r['Titre']).includes('estival'));\n\n    const categories = [];\n    if (isEcole) categories.push('ecole');\n    if (isEntreprise) categories.push('entreprise');\n    if (hasAnnuel) categories.push('cotisant_annuel');\n    if (hasSaisonnier) categories.push('cotisant_saisonnier');\n    if (categories.length === 0) categories.push('autre');\n\n    const cotisationAJour = hasAnnuel || hasSaisonnier;\n\n    const licenseTitles = Array.from(\n      new Set(\n        cotisationRows\n          .filter((r) => norm(r['Type']).includes('passeport') || norm(r['Type']).includes('licence'))\n          .map((r) => r['Titre'])\n          .filter(Boolean)\n      )\n    );\n\n    const warnings = [];\n    const unknownTypes = Array.from(new Set(cotisationRows.map((r) => r['Type']).filter((t) => t && !KNOWN_COTISATION_TYPES.has(t))));\n    if (unknownTypes.length > 0) {\n      warnings.push(`Type de cotisation non reconnu: ${unknownTypes.join(', ')}`);\n    }\n\n    const scored = people.map((p) => {\n      const pCats = [];\n      if (norm(p['Type pers. morale']).includes('ecole')) pCats.push('ecole');\n      if (norm(p['Type pers. morale']).includes('entreprise')) pCats.push('entreprise');\n      const rank = pCats.length ? CATEGORY_PRIORITY.findIndex((c) => pCats.includes(c)) : CATEGORY_PRIORITY.length;\n      return { p, rank };\n    });\n    scored.sort((a, b) => a.rank - b.rank);\n    const primary = scored[0].p;\n    const others = people.filter((p) => p !== primary);\n\n    const nom = primary['Type'] === 'Personne morale' && primary['Raison sociale'] ? primary['Raison sociale'] : primary['Nom'];\n    const prenom = primary['Type'] === 'Personne morale' ? '' : primary['Prénom'];\n\n    const rawPhone = primary['Mobile'] || primary['Téléphone'] || '';\n    const phone = normalizePhone(rawPhone, primary['Pays']);\n    if (rawPhone && !phone.ok) {\n      warnings.push(`Telephone invalide/non normalisable: \"${rawPhone}\"`);\n    }\n\n    brevoRows.push({\n      EMAIL: email,\n      NOM: nom,\n      PRENOM: prenom,\n      CIVILITE: primary['Civilité'] || '',\n      PERSONNE_REFERENTE: primary['Personne référente'] || '',\n      ADRESSE: Array.from(new Set([primary['Adresse 1'], primary['Adresse 2']].filter(Boolean))).join(' '),\n      CODE_POSTAL: primary['Code postal'] || '',\n      VILLE: sanitizeCityField(primary['Ville']),\n      PAYS: primary['Pays'] || '',\n      TELEPHONE: phone.value,\n      CATEGORIES: categories.join(';'),\n      COTISATION_A_JOUR: cotisationAJour ? 'oui' : 'non',\n      ANNEE_COTISATION: currentYear,\n      TYPE_LICENCE: licenseTitles.join('; '),\n      NB_PERSONNES_LIEES: String(people.length),\n      AUTRES_PERSONNES: others.map((p) => `${p['Prénom']} ${p['Nom']}`.trim()).join('; '),\n      __avertissements: warnings,\n    });\n  }\n\n  // Brevo attend un numero unique par contact : un meme telephone normalise\n  // sur deux emails differents doit etre signale plutot que d'echouer en\n  // silence au moment de l'appel API.\n  // Brevo traite l'attribut SMS comme un identifiant unique (comme l'email) :\n  // envoyer le meme numero pour deux contacts differents fait echouer l'appel\n  // API du second (erreur \"duplicate_identifiers\"). On ne garde le numero que\n  // sur le premier contact rencontre et on vide les autres plutot que de\n  // laisser echouer l'import a chaque execution.\n  const phoneSeenCount = new Map();\n  for (const row of brevoRows) {\n    if (!row.TELEPHONE) continue;\n    const occurrence = (phoneSeenCount.get(row.TELEPHONE) || 0) + 1;\n    phoneSeenCount.set(row.TELEPHONE, occurrence);\n    if (occurrence > 1) {\n      row.__avertissements.push(\n        `Telephone ${row.TELEPHONE} partage avec un autre contact Brevo -- vide ici pour eviter un rejet API (le premier contact rencontre garde la valeur)`\n      );\n      row.TELEPHONE = '';\n    }\n  }\n\n  const warningRows = brevoRows\n    .filter((row) => row.__avertissements.length > 0)\n    .map((row) => ({ ...row, AVERTISSEMENT: row.__avertissements.join(' | ') }));\n\n  for (const row of brevoRows) delete row.__avertissements;\n  for (const row of warningRows) delete row.__avertissements;\n\n  return { brevoRows, rejectedRows: rejected, warningRows };\n}\n\nfunction csvEscape(value, delimiter) {\n  const s = value === undefined || value === null ? '' : String(value);\n  if (s.includes(delimiter) || s.includes('\"') || s.includes('\\n') || s.includes('\\r')) {\n    return '\"' + s.replace(/\"/g, '\"\"') + '\"';\n  }\n  return s;\n}\n\nfunction toCsv(rows, delimiter) {\n  delimiter = delimiter || ';';\n  if (rows.length === 0) return '';\n  const headers = Object.keys(rows[0]);\n  const lines = [headers.join(delimiter)];\n  for (const row of rows) {\n    lines.push(headers.map((h) => csvEscape(row[h], delimiter)).join(delimiter));\n  }\n  return lines.join('\\r\\n');\n}\n\nconst items = $input.all();\n\nfunction findIndexByFilename(pattern) {\n  return items.findIndex((it) => (it.json.fileName || '').toLowerCase().includes(pattern));\n}\n\nconst clientsIdx = findIndexByFilename('liste_clients');\nconst cotisantsIdx = findIndexByFilename('cotisants');\n\nif (clientsIdx === -1) {\n  throw new Error(\"Fichier 'liste_clients*.csv' introuvable parmi les fichiers lus. Verifie qu'il est bien dans data/imports/liste_clients/.\");\n}\nif (cotisantsIdx === -1) {\n  throw new Error(\"Fichier 'cotisants*.csv' introuvable parmi les fichiers lus. Verifie qu'il est bien dans data/imports/cotisants/.\");\n}\n\nconst clientsBuffer = await this.helpers.getBinaryDataBuffer(clientsIdx, 'data');\nconst cotisantsBuffer = await this.helpers.getBinaryDataBuffer(cotisantsIdx, 'data');\n\nconst clientsRawRows = parseCsv(decodeCp1252(clientsBuffer), ';');\nconst cotisantsRawRows = parseCsv(decodeCp1252(cotisantsBuffer), ';');\n\n// Echoue explicitement si l'export ouiresa a change de format (colonne\n// renommee/supprimee) plutot que de laisser le reste tourner en silence.\nvalidateHeader(clientsRawRows, REQUIRED_CLIENT_COLUMNS, 'liste_clients.csv');\nvalidateHeader(cotisantsRawRows, REQUIRED_COTISANT_COLUMNS, 'cotisants.csv');\n\nconst clientsRows = rowsToObjects(clientsRawRows);\nconst cotisantsRows = rowsToObjects(cotisantsRawRows);\n\nconst { brevoRows, rejectedRows, warningRows } = buildOutputs(clientsRows, cotisantsRows);\n\nconst brevoCsv = toCsv(brevoRows, ';');\nconst rejectedCsv = toCsv(rejectedRows, ';');\nconst warningCsv = toCsv(warningRows, ';');\n\nconst brevoBinary = await this.helpers.prepareBinaryData(Buffer.from(brevoCsv, 'utf8'), 'brevo_import.csv', 'text/csv');\nconst rejectedBinary = await this.helpers.prepareBinaryData(Buffer.from(rejectedCsv, 'utf8'), 'non_categorise.csv', 'text/csv');\nconst warningBinary = await this.helpers.prepareBinaryData(Buffer.from(warningCsv, 'utf8'), 'a_verifier.csv', 'text/csv');\n\nreturn [\n  {\n    json: { fileName: 'brevo_import.csv', nbContacts: brevoRows.length, categories: Object.fromEntries(\n      Object.entries(brevoRows.reduce((acc, r) => { for (const c of r.CATEGORIES.split(';')) acc[c] = (acc[c] || 0) + 1; return acc; }, {}))\n    ) },\n    binary: { data: brevoBinary },\n  },\n  {\n    json: { fileName: 'non_categorise.csv', nbLignes: rejectedRows.length },\n    binary: { data: rejectedBinary },\n  },\n  {\n    json: { fileName: 'a_verifier.csv', nbLignes: warningRows.length },\n    binary: { data: warningBinary },\n  },\n];\n"
+      }
+    },
+    {
+      "id": "write-output",
+      "name": "Ecrire CSV dans /output",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        300
+      ],
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/output/{{ $json.fileName }}",
+        "dataPropertyName": "data"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Read liste_clients.csv",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Read cotisants.csv",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read liste_clients.csv": {
+      "main": [
+        [
+          {
+            "node": "Merge fichiers lus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read cotisants.csv": {
+      "main": [
+        [
+          {
+            "node": "Merge fichiers lus",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge fichiers lus": {
+      "main": [
+        [
+          {
+            "node": "Segmenter et categoriser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Segmenter et categoriser": {
+      "main": [
+        [
+          {
+            "node": "Ecrire CSV dans /output",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

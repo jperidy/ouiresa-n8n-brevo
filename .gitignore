@@ -1,0 +1,7 @@
+.env
+data/imports/**/*.csv
+data/output/**/*.csv
+workflows/backup-*.json
+backup-before-postgres/
+*.sql
+.claude
