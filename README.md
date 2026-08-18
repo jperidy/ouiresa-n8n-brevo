@@ -31,7 +31,7 @@ run-import         Etape 2: envoie brevo_import.csv vers l'API Brevo
 test               Teste le script de segmentation en local (sans Docker) sur les vrais CSV
 db-backup          Dump complet de la base Postgres vers backup_<date>.sql
 db-restore         Restaure un dump (usage: make db-restore FILE=backup_xxx.sql)
-workflows-backup   Exporte workflows + credentials au format n8n dans workflows/
+workflows-backup   Resynchronise workflows/0X-*.json avec l'etat actuel dans n8n (credentials a part)
 ```
 
 ## 1. Setup depuis zéro
@@ -73,6 +73,36 @@ fichier n'a pas d'importance, seul le dossier compte — évite juste d'en
 laisser plusieurs à la fois dans un même dossier. Contenu jamais commité
 (`.gitignore`).
 
+### 2bis. CA / Bureau (optionnel)
+
+Contrairement aux deux CSV ci-dessus, `ca_bureau.csv` n'est **pas** un export
+ouiresa : c'est une liste tenue à la main (Trésorier, Président·e...) pour
+rattacher les membres du CA/Bureau à des listes de diffusion Brevo dédiées,
+séparées des listes de type de client. Crée-le toi-même dans
+`data/imports/ca_bureau/` (encodage UTF-8, séparateur `;`) :
+
+```
+Email;Nom;Prenom;Role
+president@example.org;Dupont;Marie;bureau
+tresorier@example.org;Martin;Paul;"ca;bureau"
+externe.administrateur@example.org;Le Gall;Yann;ca
+```
+
+- `Role` vaut `ca`, `bureau`, ou les deux à la fois (entoure de guillemets et
+  sépare par `;`, comme la 3e ligne de l'exemple — sinon le `;` serait lu
+  comme un nouveau champ).
+- Si l'email correspond à un contact déjà présent dans `liste_clients.csv`,
+  les catégories `ca`/`bureau` s'ajoutent aux siennes (il garde son adresse,
+  sa cotisation, etc.). Sinon (ex: administrateur externe non-adhérent), un
+  contact minimal est créé avec juste son nom/prénom/rôle.
+- Fichier optionnel : absent, l'étape est simplement ignorée (voir §6).
+  Contenu jamais commité (`.gitignore`, même règle que les deux autres CSV).
+- Retirer une ligne retire la personne des listes `ca`/`bureau` **seulement**
+  si elle est aussi dans `liste_clients.csv` (resynchronisation, voir §8) —
+  pour un administrateur externe sans ligne dans `liste_clients.csv`, il n'y
+  a alors plus aucune ligne générée pour lui du tout, donc pas de retrait
+  automatique côté Brevo (à faire à la main, comme documenté en §8).
+
 ## 3. Importer les workflows
 
 ```bash
@@ -107,9 +137,11 @@ en-tête (pas le nœud Brevo dédié, plus simple à maintenir dans le temps) :
 Deux types de listes, car les cotisants changent chaque année mais on veut
 garder l'historique (voir §8) :
 
-- **Listes structurelles** (`ecole`, `entreprise`, `autre`) : pas liées à
-  une année, un contact y est ajouté/retiré à chaque run selon son état
-  actuel. À créer une fois pour toutes.
+- **Listes structurelles** (`ecole`, `entreprise`, `autre`, `ca`, `bureau`) :
+  pas liées à une année, un contact y est ajouté/retiré à chaque run selon
+  son état actuel. À créer une fois pour toutes. `ca`/`bureau` viennent de
+  `data/imports/ca_bureau/ca_bureau.csv`, une liste tenue à la main plutôt
+  qu'un export ouiresa (voir §2bis).
 - **Listes de cotisation, une paire par année** (`Cotisant annuel 2026`,
   `Cotisant saisonnier 2026`) : un contact y est seulement ajouté, jamais
   retiré automatiquement — c'est un instantané figé de qui était cotisant
@@ -124,6 +156,8 @@ const STRUCTURE_LIST_IDS = {
   ecole: 2,        // <- ID reel de ta liste "Ecole"
   entreprise: 3,    // <- ID reel de ta liste "Entreprise"
   autre: 6,         // <- ID reel de ta liste "Autre"
+  ca: 7,            // <- ID reel de ta liste "CA"
+  bureau: 8,        // <- ID reel de ta liste "Bureau"
 };
 
 const COTISATION_LIST_IDS_BY_YEAR = {
@@ -181,7 +215,8 @@ make run-generate
 ```
 
 Vérifie d'abord que les deux CSV source ont bien les colonnes attendues
-(échec explicite sinon — voir §12), puis produit trois fichiers dans
+(échec explicite sinon — voir §12), lit aussi `ca_bureau.csv` s'il est
+présent (ignoré sinon — voir §2bis), puis produit trois fichiers dans
 `data/output/` :
 - `brevo_import.csv` : contacts prêts pour Brevo
 - `non_categorise.csv` : lignes **exclues** (email manquant/invalide/suspect), avec la raison en dernière colonne — rien de ça ne part vers Brevo
@@ -212,7 +247,7 @@ Colonnes de `brevo_import.csv` :
 
 | Colonne | Contenu |
 |---|---|
-| `CATEGORIES` | Une ou plusieurs valeurs parmi `ecole`, `entreprise`, `cotisant_annuel`, `cotisant_saisonnier`, `autre`, séparées par `;` |
+| `CATEGORIES` | Une ou plusieurs valeurs parmi `ecole`, `entreprise`, `cotisant_annuel`, `cotisant_saisonnier`, `autre`, `ca`, `bureau`, séparées par `;` |
 | `COTISATION_A_JOUR` | `oui` si le contact a payé une cotisation (annuelle ou estivale) **pour l'année civile en cours**, recalculé à chaque exécution |
 | `TYPE_LICENCE` | Passeport voile / Licence FFV, si présent dans `cotisants.csv` |
 | `NB_PERSONNES_LIEES` / `AUTRES_PERSONNES` | Quand plusieurs personnes du club partagent un même email (couple, fratrie), Brevo ne peut stocker qu'un contact par email : les infos sont fusionnées sur une ligne, ces colonnes te permettent de vérifier qui est rattaché |
@@ -221,7 +256,11 @@ Règles :
 - **Catégories multiples** : école/entreprise (type de structure) et
   cotisant annuel/saisonnier (statut de paiement) ne s'excluent pas — un
   contact peut appartenir à plusieurs listes Brevo en même temps.
-- **`autre`** uniquement si aucune des 4 autres catégories ne s'applique.
+- **`autre`** uniquement si aucune des 4 autres catégories (ecole/entreprise/
+  cotisant_annuel/cotisant_saisonnier) ne s'applique.
+- **`ca`/`bureau`** : axe indépendant (rôle associatif, pas type de client),
+  vient de `ca_bureau.csv` (§2bis) — se cumule sans exclure les autres
+  catégories, y compris `autre`.
 - **À jour = année civile courante uniquement.** Un cotisant qui ne renouvelle
   pas l'année suivante repasse `COTISATION_A_JOUR = non` au prochain export,
   et le workflow 2 le **retire activement** des listes `cotisant_annuel` /
@@ -236,14 +275,14 @@ Règles :
 
 Le workflow 2 fait un upsert (`updateEnabled: true`) par ligne de
 `brevo_import.csv`, avec ajout (`listIds`) et retrait (`unlinkListIds`).
-Les listes **structurelles** (`ecole`, `entreprise`, `autre`) et les listes
-**de cotisation par année** (§5) ne suivent pas la même règle :
+Les listes **structurelles** (`ecole`, `entreprise`, `autre`, `ca`, `bureau`)
+et les listes **de cotisation par année** (§5) ne suivent pas la même règle :
 
 | Scénario | Comportement |
 |---|---|
 | **Contact absent de Brevo** | Créé avec les attributs du CSV, ajouté aux listes de `listIds`. `unlinkListIds` ne fait rien (il n'était dans aucune liste). |
 | **Contact existant, infos différentes** (adresse, statut cotisation...) | Les attributs envoyés (`NOM`, `ADRESSE`, `COTISATION_A_JOUR`...) **écrasent** la valeur Brevo actuelle — le CSV est source de vérité pour ces champs. |
-| **Contact existant, listes structurelles différentes** | Resynchronisation complète à chaque run : ajouté aux listes qui s'appliquent maintenant, **retiré** de celles qui ne s'appliquent plus (`ecole`/`entreprise`/`autre` uniquement). |
+| **Contact existant, listes structurelles différentes** | Resynchronisation complète à chaque run : ajouté aux listes qui s'appliquent maintenant, **retiré** de celles qui ne s'appliquent plus (`ecole`/`entreprise`/`autre`/`ca`/`bureau` uniquement). |
 | **Contact existant, statut de cotisation différent** | Ajouté à la liste `Cotisant <categorie> <année>` de l'année en cours si applicable, mais **jamais retiré** d'une liste de cotisation d'une année passée — ces listes sont des instantanés historiques figés, pas un statut courant (voir §5). Un non-renouvellement n'efface donc pas la trace "cotisant en 2026". |
 | **Contact dans Brevo mais absent du CSV** (supprimé côté ouiresa, ou exclu par le filtre email) | **Rien ne se passe.** Le workflow ne fait qu'un POST par ligne présente dans `brevo_import.csv` — aucune suppression ni désabonnement automatique côté Brevo. Le contact reste tel quel indéfiniment. |
 | **Contact désabonné manuellement dans Brevo** (`emailBlacklisted`) | Pas touché : ce champ n'est pas envoyé, un désabonnement reste donc respecté même après mise à jour. |
@@ -315,12 +354,24 @@ n8n utilise Postgres comme backend (service `postgres`, volume nommé
 ```bash
 make db-backup                        # -> backup_<date>.sql
 make db-restore FILE=backup_xxx.sql   # sur une base vide, conteneurs demarres
-make workflows-backup                 # workflows + credentials au format n8n, dans workflows/
+make workflows-backup                 # resynchronise workflows/0X-*.json + backup-credentials.json
 ```
 
 Ces backups ne protègent que si tu les copies **ailleurs** que dans ce
 dossier de projet — un fichier généré ici reste exposé aux mêmes accidents
 (`rm -rf`, `git clean -fdx`) que le reste du repo.
+
+**Round-trip après une modif faite dans l'éditeur n8n** (ex: IDs de listes
+Brevo dans `STRUCTURE_LIST_IDS`) : `make workflows-backup` réexporte l'état
+actuel des deux workflows connus (`seg0000001brevo`, `imp0000002brevo`)
+directement dans `workflows/01-...json` / `workflows/02-...json` — ce sont
+les mêmes fichiers que lit `make import`, donc `git diff workflows/` montre
+exactement ce qui a changé et tu peux committer. Un export brut n8n contient
+aussi des métadonnées propres à cette instance (dates, IDs de version,
+partage...) : `workflows/scripts/sync-workflow-export.py` les filtre et vide
+l'ID du credential Brevo (voir §4 — seul le nom est committé, pour rester
+portable sur une install neuve). Les credentials (contenu chiffré, jamais
+committé) restent exportés à part dans `backup-credentials.json`.
 
 ```bash
 make down    # arrete les conteneurs, garde les donnees
@@ -335,10 +386,11 @@ make reset   # arrete et supprime aussi les volumes -- destructif, repart de zer
   `docker-compose.yml`. Si tu ajoutes un nouveau dossier monté, ajoute-le à
   cette variable (séparateur `;`) puis `make up`.
 - **"Colonnes manquantes dans ..."** : le workflow 1 a échoué au démarrage
-  car une colonne attendue n'existe plus dans l'export ouiresa. Regarde le
+  car une colonne attendue n'existe plus dans l'export ouiresa (ou dans
+  `ca_bureau.csv`, si tu as renommé une colonne à la main). Regarde le
   message d'erreur, compare avec le header réel du CSV, et mets à jour
-  `REQUIRED_CLIENT_COLUMNS`/`REQUIRED_COTISANT_COLUMNS` dans
-  `workflows/scripts/segmenter.js` si le renommage est volontaire (§10).
+  `REQUIRED_CLIENT_COLUMNS`/`REQUIRED_COTISANT_COLUMNS`/`REQUIRED_CA_BUREAU_COLUMNS`
+  dans `workflows/scripts/segmenter.js` si le renommage est volontaire (§10).
 - **Accents cassés dans Brevo** : vérifie que le CSV source est toujours en
   Windows-1252 (ne pas le réenregistrer en UTF-8 avant import).
 - **`n8n Task Broker's port 5679 is already in use`** : n'utilise pas
@@ -357,11 +409,13 @@ docker-compose.yml
 .env                                    # secrets locaux (jamais commité)
 data/imports/liste_clients/             # source: export "Liste des clients"
 data/imports/cotisants/                 # source: export "Licences achetées"
+data/imports/ca_bureau/                 # optionnel: liste CA/Bureau tenue a la main (§2bis)
 data/output/                            # généré par les workflows 1 et 2 (jamais commité)
 workflows/01-generer-fichiers-brevo.json
 workflows/02-importer-contacts-brevo.json
 workflows/scripts/segmenter.js          # logique de segmentation, testable en Node
 workflows/scripts/test-segmenter.js     # script de test contre les vrais CSV
+workflows/scripts/sync-workflow-export.py  # nettoie un export n8n pour make workflows-backup (§11)
 ```
 
 ## Sécurité

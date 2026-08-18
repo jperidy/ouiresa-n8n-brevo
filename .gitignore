@@ -2,6 +2,7 @@
 data/imports/**/*.csv
 data/output/**/*.csv
 workflows/backup-*.json
+workflows/.raw-*.json
 backup-before-postgres/
 *.sql
 .claude

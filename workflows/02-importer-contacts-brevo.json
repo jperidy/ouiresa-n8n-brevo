@@ -3,70 +3,59 @@
   "name": "02 - Importer contacts vers Brevo (depuis CSV valide)",
   "nodes": [
     {
+      "parameters": {},
       "id": "trigger-1",
       "name": "Manual Trigger",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
         240,
-        300
-      ],
-      "parameters": {}
+        304
+      ]
     },
     {
+      "parameters": {
+        "fileSelector": "/output/brevo_import.csv",
+        "options": {}
+      },
       "id": "read-csv",
       "name": "Read brevo_import.csv",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        460,
-        300
-      ],
-      "parameters": {
-        "operation": "read",
-        "fileSelector": "/output/brevo_import.csv"
-      }
+        464,
+        304
+      ]
     },
     {
+      "parameters": {
+        "options": {
+          "delimiter": ";"
+        }
+      },
       "id": "extract-csv",
       "name": "Extract CSV",
       "type": "n8n-nodes-base.extractFromFile",
       "typeVersion": 1,
       "position": [
-        680,
-        300
-      ],
-      "parameters": {
-        "operation": "csv",
-        "binaryPropertyName": "data",
-        "options": {
-          "delimiter": ";"
-        }
-      }
+        688,
+        304
+      ]
     },
     {
+      "parameters": {
+        "jsCode": "// ===== A ADAPTER : IDs des listes Brevo (Brevo > Contacts > Listes, l'ID est dans l'URL) =====\n\n// Listes structurelles : pas liees a une annee, resynchronisees a chaque\n// run (ajout si applicable maintenant, retrait sinon).\nconst STRUCTURE_LIST_IDS = {\n  ecole: 8, // EDIT_ME\n  entreprise: 9, // EDIT_ME\n  autre: 10, // EDIT_ME\n  bureau: 16, // EDIT_ME -- ID reel de ta liste \"Bureau\"\n  ca: 18, // EDIT_ME -- ID reel de ta liste \"CA\"\n};\n\n// Listes de cotisation, une paire par annee : ajoute une entree chaque\n// saison (garder les annees precedentes, ne rien supprimer). Une fois un\n// contact ajoute a la liste d'une annee, il n'en est JAMAIS retire\n// automatiquement -- c'est un instantane historique fige, pas un statut\n// courant. Sans ca, un adherent qui ne renouvelle pas disparaitrait de la\n// liste \"cotisant 2026\" l'annee suivante et on perdrait cet historique.\nconst COTISATION_LIST_IDS_BY_YEAR = {\n  2026: { cotisant_annuel: 11, cotisant_saisonnier: 12 }, // EDIT_ME\n  2027: { cotisant_annuel: 13, cotisant_saisonnier: 14 }, // ajouter ici l'an prochain\n};\n\nconst items = $input.all();\nconst output = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const categories = String(row.CATEGORIES || '')\n    .split(';')\n    .map((s) => s.trim())\n    .filter(Boolean);\n  const year = row.ANNEE_COTISATION || String(new Date().getFullYear());\n  const yearLists = COTISATION_LIST_IDS_BY_YEAR[year] || {};\n\n  const listIds = [];\n  const unlinkListIds = [];\n  const avertissements = [];\n\n  for (const [cat, id] of Object.entries(STRUCTURE_LIST_IDS)) {\n    if (categories.includes(cat)) listIds.push(id);\n    else unlinkListIds.push(id);\n  }\n\n  for (const cat of ['cotisant_annuel', 'cotisant_saisonnier']) {\n    if (!categories.includes(cat)) continue;\n    if (yearLists[cat]) {\n      listIds.push(yearLists[cat]);\n    } else {\n      avertissements.push(`Pas de liste Brevo configuree pour ${cat} ${year} (COTISATION_LIST_IDS_BY_YEAR)`);\n    }\n  }\n\n  const attributes = {\n    NOM: row.NOM || '',\n    PRENOM: row.PRENOM || '',\n    ADRESSE: row.ADRESSE || '',\n    CODE_POSTAL: row.CODE_POSTAL || '',\n    VILLE: row.VILLE || '',\n    PAYS: row.PAYS || '',\n    SMS: row.TELEPHONE || '',\n    COTISATION_A_JOUR: row.COTISATION_A_JOUR === 'oui',\n    ANNEE_COTISATION: row.ANNEE_COTISATION || '',\n    TYPE_LICENCE: row.TYPE_LICENCE || '',\n    NB_PERSONNES_LIEES: Number(row.NB_PERSONNES_LIEES) || 1,\n    AUTRES_PERSONNES: row.AUTRES_PERSONNES || '',\n  };\n\n  output.push({\n    json: {\n      email: row.EMAIL,\n      attributes,\n      listIds,\n      unlinkListIds,\n      avertissements,\n    },\n  });\n}\n\nreturn output;"
+      },
       "id": "map-code",
       "name": "Preparer payload Brevo",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        900,
-        300
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// ===== A ADAPTER : IDs des listes Brevo (Brevo > Contacts > Listes, l'ID est dans l'URL) =====\n\n// Listes structurelles : pas liees a une annee, resynchronisees a chaque\n// run (ajout si applicable maintenant, retrait sinon).\nconst STRUCTURE_LIST_IDS = {\n  ecole: 2, // EDIT_ME\n  entreprise: 3, // EDIT_ME\n  autre: 6, // EDIT_ME\n};\n\n// Listes de cotisation, une paire par annee : ajoute une entree chaque\n// saison (garder les annees precedentes, ne rien supprimer). Une fois un\n// contact ajoute a la liste d'une annee, il n'en est JAMAIS retire\n// automatiquement -- c'est un instantane historique fige, pas un statut\n// courant. Sans ca, un adherent qui ne renouvelle pas disparaitrait de la\n// liste \"cotisant 2026\" l'annee suivante et on perdrait cet historique.\nconst COTISATION_LIST_IDS_BY_YEAR = {\n  2026: { cotisant_annuel: 4, cotisant_saisonnier: 5 }, // EDIT_ME\n  // 2027: { cotisant_annuel: 0, cotisant_saisonnier: 0 }, // ajouter ici l'an prochain\n};\n\nconst items = $input.all();\nconst output = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const categories = String(row.CATEGORIES || '')\n    .split(';')\n    .map((s) => s.trim())\n    .filter(Boolean);\n  const year = row.ANNEE_COTISATION || String(new Date().getFullYear());\n  const yearLists = COTISATION_LIST_IDS_BY_YEAR[year] || {};\n\n  const listIds = [];\n  const unlinkListIds = [];\n  const avertissements = [];\n\n  for (const [cat, id] of Object.entries(STRUCTURE_LIST_IDS)) {\n    if (categories.includes(cat)) listIds.push(id);\n    else unlinkListIds.push(id);\n  }\n\n  for (const cat of ['cotisant_annuel', 'cotisant_saisonnier']) {\n    if (!categories.includes(cat)) continue;\n    if (yearLists[cat]) {\n      listIds.push(yearLists[cat]);\n    } else {\n      avertissements.push(`Pas de liste Brevo configuree pour ${cat} ${year} (COTISATION_LIST_IDS_BY_YEAR)`);\n    }\n  }\n\n  const attributes = {\n    NOM: row.NOM || '',\n    PRENOM: row.PRENOM || '',\n    ADRESSE: row.ADRESSE || '',\n    CODE_POSTAL: row.CODE_POSTAL || '',\n    VILLE: row.VILLE || '',\n    PAYS: row.PAYS || '',\n    SMS: row.TELEPHONE || '',\n    COTISATION_A_JOUR: row.COTISATION_A_JOUR === 'oui',\n    ANNEE_COTISATION: row.ANNEE_COTISATION || '',\n    TYPE_LICENCE: row.TYPE_LICENCE || '',\n    NB_PERSONNES_LIEES: Number(row.NB_PERSONNES_LIEES) || 1,\n    AUTRES_PERSONNES: row.AUTRES_PERSONNES || '',\n  };\n\n  output.push({\n    json: {\n      email: row.EMAIL,\n      attributes,\n      listIds,\n      unlinkListIds,\n      avertissements,\n    },\n  });\n}\n\nreturn output;"
-      }
+        912,
+        304
+      ]
     },
     {
-      "id": "http-brevo",
-      "name": "Brevo - Upsert contact",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [
-        1120,
-        300
-      ],
       "parameters": {
         "method": "POST",
         "url": "https://api.brevo.com/v3/contacts",
@@ -85,59 +74,66 @@
         "specifyBody": "json",
         "jsonBody": "={{ { \"email\": $json.email, \"attributes\": $json.attributes, \"listIds\": $json.listIds, \"unlinkListIds\": $json.unlinkListIds, \"updateEnabled\": true } }}",
         "options": {
-          "response": {
-            "response": {
-              "neverError": true
-            }
-          },
           "batching": {
             "batch": {
               "batchSize": 1,
               "batchInterval": 400
             }
+          },
+          "response": {
+            "response": {
+              "neverError": true
+            }
           }
         }
       },
+      "id": "http-brevo",
+      "name": "Brevo - Upsert contact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        304
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
       "credentials": {
         "httpHeaderAuth": {
           "id": "",
           "name": "Brevo API Key"
         }
       },
-      "retryOnFail": true,
-      "maxTries": 3,
-      "waitBetweenTries": 2000,
-      "continueOnFail": true,
-      "alwaysOutputData": true
+      "continueOnFail": true
     },
     {
+      "parameters": {
+        "jsCode": "// Formes reelles observees en sortie du noeud HTTP Brevo (verifie dans le\n// code source du noeud n8n) :\n// - erreur reseau (ECONNRESET, TLS...) : json = { error: { message, name, stack, code } }\n// - erreur de construction de requete (rare) : json = { error: 'message string' }\n// - erreur API Brevo (4xx, neverError=true) : json = { code, message, metadata }  -- pas d'enveloppe 'error'\n// - succes : json = la reponse Brevo (contient 'id' ou pas d'erreur)\nfunction extractError(resp) {\n  if (resp.code && resp.message) return `${resp.message} (${resp.code})`;\n  if (resp.error) {\n    if (typeof resp.error === 'string') return resp.error;\n    const suffix = resp.error.code ? ` (${resp.error.code})` : '';\n    return (resp.error.message || JSON.stringify(resp.error)) + suffix;\n  }\n  return null;\n}\n\nconst items = $input.all();\nconst mapItems = $('Preparer payload Brevo').all();\nconst rows = [];\nfor (let i = 0; i < items.length; i++) {\n  const resp = items[i].json;\n  const mapped = mapItems[i] ? mapItems[i].json : {};\n  const errorDetail = extractError(resp);\n  if (errorDetail) {\n    rows.push({ EMAIL: mapped.email || '', TYPE: 'erreur_api', DETAIL: errorDetail });\n  }\n  for (const w of (mapped.avertissements || [])) {\n    rows.push({ EMAIL: mapped.email || '', TYPE: 'avertissement_config', DETAIL: w });\n  }\n}\nfunction csvEscape(value) {\n  const s = value === undefined || value === null ? '' : String(value);\n  if (s.includes(';') || s.includes('\"') || s.includes('\\n') || s.includes('\\r')) {\n    return '\"' + s.replace(/\"/g, '\"\"') + '\"';\n  }\n  return s;\n}\nconst headers = ['EMAIL', 'TYPE', 'DETAIL'];\nconst lines = [headers.join(';')];\nfor (const row of rows) lines.push(headers.map((h) => csvEscape(row[h])).join(';'));\nconst csv = lines.join('\\r\\n');\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(csv, 'utf8'), 'erreurs_brevo.csv', 'text/csv');\nreturn [{\n  json: {\n    fileName: 'erreurs_brevo.csv',\n    total: items.length,\n    erreurs: rows.filter((r) => r.TYPE === 'erreur_api').length,\n    avertissements: rows.filter((r) => r.TYPE === 'avertissement_config').length,\n  },\n  binary: { data: binary },\n}];"
+      },
       "id": "summary-code",
       "name": "Resume import",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1340,
-        300
-      ],
-      "parameters": {
-        "mode": "runOnceForAllItems",
-        "jsCode": "// Formes reelles observees en sortie du noeud HTTP Brevo (verifie dans le\n// code source du noeud n8n) :\n// - erreur reseau (ECONNRESET, TLS...) : json = { error: { message, name, stack, code } }\n// - erreur de construction de requete (rare) : json = { error: 'message string' }\n// - erreur API Brevo (4xx, neverError=true) : json = { code, message, metadata }  -- pas d'enveloppe 'error'\n// - succes : json = la reponse Brevo (contient 'id' ou pas d'erreur)\nfunction extractError(resp) {\n  if (resp.code && resp.message) return `${resp.message} (${resp.code})`;\n  if (resp.error) {\n    if (typeof resp.error === 'string') return resp.error;\n    const suffix = resp.error.code ? ` (${resp.error.code})` : '';\n    return (resp.error.message || JSON.stringify(resp.error)) + suffix;\n  }\n  return null;\n}\n\nconst items = $input.all();\nconst mapItems = $('Preparer payload Brevo').all();\nconst rows = [];\nfor (let i = 0; i < items.length; i++) {\n  const resp = items[i].json;\n  const mapped = mapItems[i] ? mapItems[i].json : {};\n  const errorDetail = extractError(resp);\n  if (errorDetail) {\n    rows.push({ EMAIL: mapped.email || '', TYPE: 'erreur_api', DETAIL: errorDetail });\n  }\n  for (const w of (mapped.avertissements || [])) {\n    rows.push({ EMAIL: mapped.email || '', TYPE: 'avertissement_config', DETAIL: w });\n  }\n}\nfunction csvEscape(value) {\n  const s = value === undefined || value === null ? '' : String(value);\n  if (s.includes(';') || s.includes('\"') || s.includes('\\n') || s.includes('\\r')) {\n    return '\"' + s.replace(/\"/g, '\"\"') + '\"';\n  }\n  return s;\n}\nconst headers = ['EMAIL', 'TYPE', 'DETAIL'];\nconst lines = [headers.join(';')];\nfor (const row of rows) lines.push(headers.map((h) => csvEscape(row[h])).join(';'));\nconst csv = lines.join('\\r\\n');\nconst binary = await this.helpers.prepareBinaryData(Buffer.from(csv, 'utf8'), 'erreurs_brevo.csv', 'text/csv');\nreturn [{\n  json: {\n    fileName: 'erreurs_brevo.csv',\n    total: items.length,\n    erreurs: rows.filter((r) => r.TYPE === 'erreur_api').length,\n    avertissements: rows.filter((r) => r.TYPE === 'avertissement_config').length,\n  },\n  binary: { data: binary },\n}];"
-      }
+        1344,
+        304
+      ]
     },
     {
+      "parameters": {
+        "operation": "write",
+        "fileName": "=/output/{{ $json.fileName }}",
+        "options": {}
+      },
       "id": "write-errors",
       "name": "Ecrire erreurs_brevo.csv",
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        1560,
-        300
-      ],
-      "parameters": {
-        "operation": "write",
-        "fileName": "=/output/{{ $json.fileName }}",
-        "dataPropertyName": "data"
-      }
+        1568,
+        304
+      ]
     }
   ],
   "connections": {
@@ -209,6 +205,7 @@
     }
   },
   "settings": {
-    "executionOrder": "v1"
+    "executionOrder": "v1",
+    "binaryMode": "separate"
   }
 }

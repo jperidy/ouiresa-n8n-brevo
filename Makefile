@@ -55,6 +55,11 @@ db-restore: ## Restaure un dump (usage: make db-restore FILE=backup_xxx.sql)
 	@test -n "$(FILE)" || (echo "Usage: make db-restore FILE=backup_xxx.sql" && exit 1)
 	cat $(FILE) | docker compose exec -T postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB)
 
-workflows-backup: ## Exporte workflows + credentials au format n8n dans workflows/
-	docker compose exec n8n n8n export:workflow --all --output=/workflows/backup-workflows.json
+workflows-backup: ## Resynchronise workflows/0X-*.json avec l'etat actuel dans n8n (credentials a part)
+	docker compose exec n8n n8n export:workflow --id=seg0000001brevo --output=/workflows/.raw-01.json
+	docker compose exec n8n n8n export:workflow --id=imp0000002brevo --output=/workflows/.raw-02.json
+	python3 workflows/scripts/sync-workflow-export.py workflows/.raw-01.json workflows/01-generer-fichiers-brevo.json
+	python3 workflows/scripts/sync-workflow-export.py workflows/.raw-02.json workflows/02-importer-contacts-brevo.json
+	rm -f workflows/.raw-01.json workflows/.raw-02.json
 	docker compose exec n8n n8n export:credentials --all --output=/workflows/backup-credentials.json
+	@echo "Fichiers workflows/0X-*.json resynchronises -- verifie 'git diff workflows/' avant de committer."

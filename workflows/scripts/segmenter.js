@@ -118,6 +118,10 @@ const REQUIRED_CLIENT_COLUMNS = [
   'Code postal', 'Ville', 'Pays',
 ];
 const REQUIRED_COTISANT_COLUMNS = ['Email', 'Année', 'Type', 'Titre'];
+// ca_bureau.csv est optionnel et tenu à la main (pas un export ouiresa) :
+// une ligne par membre du CA/Bureau, colonne Role = "ca" et/ou "bureau"
+// (les deux séparés par ";" si la personne cumule les deux rôles).
+const REQUIRED_CA_BUREAU_COLUMNS = ['Email', 'Nom', 'Prenom', 'Role'];
 
 function validateHeader(rows, requiredColumns, label) {
   const header = (rows[0] || []).map((h) => h.trim());
@@ -208,8 +212,18 @@ function isBlockedEmail(e) {
 
 const CATEGORY_PRIORITY = ['ecole', 'entreprise', 'cotisant_annuel', 'cotisant_saisonnier', 'autre'];
 
-function buildOutputs(clientsRows, cotisantsRows, currentYear) {
+const CA_BUREAU_ROLES = new Set(['ca', 'bureau']);
+
+function parseCaBureauRoles(raw) {
+  return String(raw || '')
+    .split(';')
+    .map((s) => norm(s))
+    .filter((s) => CA_BUREAU_ROLES.has(s));
+}
+
+function buildOutputs(clientsRows, cotisantsRows, caBureauRows, currentYear) {
   currentYear = currentYear || getCurrentYear();
+  caBureauRows = caBureauRows || [];
 
   const cotisationsByEmail = new Map();
   for (const row of cotisantsRows) {
@@ -312,6 +326,63 @@ function buildOutputs(clientsRows, cotisantsRows, currentYear) {
     });
   }
 
+  // ca_bureau.csv : liste tenue à la main, distincte des exports ouiresa.
+  // Un membre du CA/Bureau déjà présent (client ouiresa) reçoit juste les
+  // catégories 'ca'/'bureau' en plus (résynchronisées comme ecole/entreprise/
+  // autre : voir STRUCTURE_LIST_IDS) ; un membre absent de liste_clients.csv
+  // (ex: administrateur externe) est ajouté comme contact minimal.
+  const caBureauByEmail = new Map();
+  for (const row of caBureauRows) {
+    const rawEmail = row['Email'];
+    const email = normalizeEmail(rawEmail);
+    if (!email || !isValidEmailFormat(email)) {
+      rejected.push({ ...row, __raison: !rawEmail ? 'Email manquant (CA/Bureau)' : 'Email invalide (CA/Bureau)' });
+      continue;
+    }
+    const roles = parseCaBureauRoles(row['Role']);
+    if (roles.length === 0) {
+      rejected.push({ ...row, __raison: `Role CA/Bureau non reconnu: "${row['Role'] || ''}" (attendu: ca, bureau, ou les deux separes par ;)` });
+      continue;
+    }
+    if (!caBureauByEmail.has(email)) {
+      caBureauByEmail.set(email, { roles: new Set(), nom: row['Nom'] || '', prenom: row['Prenom'] || '' });
+    }
+    const entry = caBureauByEmail.get(email);
+    roles.forEach((r) => entry.roles.add(r));
+  }
+
+  const brevoRowsByEmail = new Map(brevoRows.map((r) => [r.EMAIL, r]));
+  for (const [email, { roles, nom, prenom }] of caBureauByEmail.entries()) {
+    const existing = brevoRowsByEmail.get(email);
+    if (existing) {
+      const cats = new Set(existing.CATEGORIES.split(';').filter(Boolean));
+      roles.forEach((r) => cats.add(r));
+      existing.CATEGORIES = Array.from(cats).join(';');
+      continue;
+    }
+    const newRow = {
+      EMAIL: email,
+      NOM: nom,
+      PRENOM: prenom,
+      CIVILITE: '',
+      PERSONNE_REFERENTE: '',
+      ADRESSE: '',
+      CODE_POSTAL: '',
+      VILLE: '',
+      PAYS: '',
+      TELEPHONE: '',
+      CATEGORIES: Array.from(roles).join(';'),
+      COTISATION_A_JOUR: 'non',
+      ANNEE_COTISATION: currentYear,
+      TYPE_LICENCE: '',
+      NB_PERSONNES_LIEES: '1',
+      AUTRES_PERSONNES: '',
+      __avertissements: [],
+    };
+    brevoRows.push(newRow);
+    brevoRowsByEmail.set(email, newRow);
+  }
+
   // Brevo attend un numero unique par contact : un meme telephone normalise
   // sur deux emails differents doit etre signale plutot que d'echouer en
   // silence au moment de l'appel API.
@@ -376,4 +447,5 @@ module.exports = {
   getCurrentYear,
   REQUIRED_CLIENT_COLUMNS,
   REQUIRED_COTISANT_COLUMNS,
+  REQUIRED_CA_BUREAU_COLUMNS,
 };
