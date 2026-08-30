@@ -21,6 +21,7 @@ make help
 up                 Demarre n8n + Postgres
 down               Arrete les conteneurs (garde les donnees)
 reset              Arrete et SUPPRIME les volumes (repart de zero) -- destructif
+reset-owner        Supprime tous les comptes n8n (mdp owner oublie) -- recree le owner au prochain acces web
 ps                 Statut des conteneurs
 logs               Suit les logs de n8n
 shell              Ouvre un shell dans le conteneur n8n
@@ -43,7 +44,6 @@ cp .env.example .env
 ```
 
 Édite `.env` :
-- `N8N_BASIC_AUTH_USER` / `N8N_BASIC_AUTH_PASSWORD` : identifiants d'accès à l'éditeur n8n
 - `N8N_ENCRYPTION_KEY` : génère avec `openssl rand -hex 32` — **ne la change plus une fois des credentials enregistrés dans n8n** (Brevo notamment), sinon ils deviennent indéchiffrables
 - `POSTGRES_PASSWORD` : génère avec `openssl rand -base64 24`
 - Le reste peut rester tel quel pour un usage local
@@ -53,10 +53,10 @@ make up
 make ps   # postgres et n8n doivent etre "healthy"
 ```
 
-n8n est disponible sur http://localhost:5678 (identifiants Basic Auth
-ci-dessus). Au premier accès, n8n demande aussi de créer un compte "owner"
-(email + mot de passe) dans l'éditeur — mécanisme séparé du Basic Auth,
-utilise l'adresse de ton choix.
+n8n est disponible sur http://localhost:5678. Au premier accès, n8n demande
+de créer un compte "owner" (email + mot de passe) dans l'éditeur — utilise
+l'adresse de ton choix, aucun rapport avec les identifiants Postgres. Mot de
+passe oublié ? Voir §12.
 
 ## 2. Récupérer les fichiers sources
 
@@ -380,6 +380,12 @@ make reset   # arrete et supprime aussi les volumes -- destructif, repart de zer
 
 ## 12. Dépannage
 
+- **Mot de passe owner n8n oublié** : n8n n'a pas de "mot de passe oublié"
+  utilisable sans SMTP configuré (pas le cas ici). `make reset-owner`
+  supprime tous les comptes n8n (email + mot de passe) et repasse
+  l'instance à l'état "pas encore configurée" — au prochain accès à
+  http://localhost:5678 tu recrées un compte owner avec l'email et le mot
+  de passe de ton choix. Les workflows et credentials ne sont pas touchés.
 - **"Access to the file is not allowed."** : n8n restreint l'accès disque par
   défaut à `~/.n8n-files`. Ce projet autorise explicitement `/files`,
   `/workflows` et `/output` via `N8N_RESTRICT_FILE_ACCESS_TO` dans

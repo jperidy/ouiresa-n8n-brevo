@@ -7,7 +7,7 @@ BACKUP_FILE ?= backup_$(shell date +%Y%m%d_%H%M%S).sql
 
 .DEFAULT_GOAL := help
 
-.PHONY: help up down reset ps logs shell psql \
+.PHONY: help up down reset reset-owner ps logs shell psql \
 	import run-generate run-import test \
 	db-backup db-restore workflows-backup
 
@@ -22,6 +22,9 @@ down: ## Arrete les conteneurs (garde les donnees)
 
 reset: ## Arrete et SUPPRIME les volumes (repart de zero) -- destructif
 	docker compose down -v
+
+reset-owner: ## Supprime tous les comptes n8n (mdp owner oublie) -- recree le owner au prochain acces web
+	docker compose exec n8n n8n user-management:reset
 
 ps: ## Statut des conteneurs
 	docker compose ps
